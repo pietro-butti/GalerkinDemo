@@ -1,6 +1,5 @@
 # Conventions
 - Language: Julia >= 1.10. Package name: GalerkinDemo.
-- Data layout: a sample of N configurations with M features is an N×M Matrix{Float64}
   (rows = configurations, columns = basis functions).
 - Covariance: sample covariance with 1/(N-1) normalisation (Statistics.cov).
 - Functions are pure (no global state, no I/O) unless the spec says otherwise.
