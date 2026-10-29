@@ -189,4 +189,6 @@ Gradient of [`action`](@ref) for a `(T, L, N)` batch, same size as `ϕ`; slice `
 grad_S(λ,κ) = ϕ::AbstractArray{<:Real,3} ->
     stack(map(grad_slice(λ,κ), eachslice(ϕ; dims=3)))
 
+include("GalerkinDemo_level1.jl")
+
 end # module GalerkinDemo

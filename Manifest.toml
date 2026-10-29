@@ -2,7 +2,7 @@
 
 julia_version = "1.11.4"
 manifest_format = "2.0"
-project_hash = "aa4e770c2b01043c6213faa2c79116b0c1889dc2"
+project_hash = "1a2466f086496df68cbad757a4025a4cff947a98"
 
 [[deps.ADerrors]]
 deps = ["BDIO", "FFTW", "ForwardDiff", "LinearAlgebra", "Printf", "QuadGK", "Random", "Roots", "Statistics"]
