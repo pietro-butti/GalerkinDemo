@@ -44,7 +44,7 @@ from `basis`, `basis_grad` and `stein_psi` (spec 003) and `Statistics.cov`; no f
 All methods are pure: no mutation of `z`, no I/O. Element types follow the inputs; nothing
 is forced to `Float64`, so that ForwardDiff dual numbers pass through.
 `galerkin_matrices`, `solve_alpha`, `stein_residual` are exported from
-`src/GalerkinDemo.jl`; the code lives in `src/GalerkinDemo_solver.jl`.
+`src/GalerkinDemo.jl`; the code lives in `src/GalerkinDemo_level1.jl`.
 
 Input validation:
 - `ArgumentError`: rank of `z` wrong (not 3 for `galerkin_matrices` and `solve_alpha`; not

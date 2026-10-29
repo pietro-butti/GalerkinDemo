@@ -2,6 +2,7 @@
 # Included from GalerkinDemo.jl; uses `grad_slice` from spec 002.
 
 export basis, basis_grad, basis_laplacian, stein_psi
+export galerkin_matrices, solve_alpha, stein_residual
 
 # Throws unless `z` is a (T, L) array with T, L >= 1 and `M == T`.
 function _check_basis_args(z::AbstractMatrix{<:Real}, M)
@@ -87,3 +88,85 @@ end
 stein_psi(z::AbstractArray{<:Real,3}, M, p) =
     (_check_basis_args(z, M); stack(map(s -> stein_psi(s, M, p), eachslice(z; dims=3))))
 stein_psi(z::AbstractArray, M, p) = _rank_error(z)
+
+# ---- Galerkin matrices, α solvers and residual (spec 004-level1-solver) ----
+
+# Throws unless `z` is a (T, L, N) batch with T, L >= 1, M == T and N > T.
+function _check_solver_args(z::AbstractArray{<:Real,3}, M)
+    _check_basis_args(z, M)
+    size(z, 3) > size(z, 1) ||
+        throw(ArgumentError("need N > T for a non-singular B, got N = $(size(z, 3)), T = $(size(z, 1))"))
+    return nothing
+end
+
+_batch_rank_error(z) = throw(ArgumentError("z must have rank 3 (T, L, N), got rank $(ndims(z))"))
+
+"""
+    galerkin_matrices(z, M, p) -> NamedTuple (B, Agrad, Aibp, Q)
+
+Sample matrices of the level-1 basis for a `(T, L, N)` batch `z`, `p = (λ, κ)`, `M == T`,
+`N > T`; each is `(M, M)`, indices `i, j = 0..M-1`:
+
+    B_ij     = cov(ψ_i, ψ_j)
+    Agrad_ij = (1/N) Σ_n ∇ψ_i·∇ψ_j (z_n)
+    Aibp_ij  = − cov(ψ_i, ℒψ_j)
+    Q_ij     = cov(ℒψ_i, ℒψ_j)
+
+with the sample covariance `cov(f, g) = (1/(N−1)) Σ_n (f_n − f̄)(g_n − ḡ)`. `Aibp` is not
+symmetrised.
+"""
+function galerkin_matrices(z::AbstractArray{<:Real,3}, M, p)
+    _check_solver_args(z, M)
+    T, L, N = size(z)
+    ψ = basis(z, M)
+    Lψ = stein_psi(z, M, p)
+    G = reshape(basis_grad(z, M), T * L, M, N)
+    Agrad = sum(n -> G[:, :, n]' * G[:, :, n], 1:N) / N
+    return (B = cov(ψ'), Agrad = Agrad, Aibp = -cov(ψ', Lψ'), Q = cov(Lψ'))
+end
+galerkin_matrices(z::AbstractArray, M, p) = _batch_rank_error(z)
+
+"""
+    solve_alpha(z, M, p, kind) -> Vector
+
+Galerkin coefficients `α` (size `(M,)`) for the source `s = e₀` (`s_j = δ_j0`), from the
+matrices of [`galerkin_matrices`](@ref); `kind` selects the system, solved with `\\`:
+
+    :grad   Agrad α = B s
+    :ibp    Aibp  α = B s
+    :vm     Q α = Aibpᵀ s
+"""
+function solve_alpha(z::AbstractArray{<:Real,3}, M, p, kind::Symbol)
+    kind in (:grad, :ibp, :vm) ||
+        throw(ArgumentError("kind must be :grad, :ibp or :vm, got :$kind"))
+    (; B, Agrad, Aibp, Q) = galerkin_matrices(z, M, p)
+    s = zeros(eltype(B), M)
+    s[1] = one(eltype(B))
+    kind === :grad && return Agrad \ (B * s)
+    kind === :ibp && return Aibp \ (B * s)
+    return Q \ (Aibp' * s)
+end
+solve_alpha(z::AbstractArray, M, p, kind::Symbol) = _batch_rank_error(z)
+
+"""
+    stein_residual(z, M, p, α) -> Real or Vector
+
+Pointwise residual of the coefficients `α` (length `M`):
+
+    R(z; α) = ψ₀(z) + Σ_j α_j ℒψ_j(z)
+
+A `(T, L)` configuration gives a scalar, a `(T, L, N)` batch a vector of size `(N,)`.
+"""
+function stein_residual(z::AbstractMatrix{<:Real}, M, p, α)
+    _check_basis_args(z, M)
+    length(α) == M ||
+        throw(DimensionMismatch("α has length $(length(α)), expected M = $M"))
+    return basis(z, M)[1] + sum(α .* stein_psi(z, M, p))
+end
+function stein_residual(z::AbstractArray{<:Real,3}, M, p, α)
+    _check_basis_args(z, M)
+    length(α) == M ||
+        throw(DimensionMismatch("α has length $(length(α)), expected M = $M"))
+    return map(s -> stein_residual(s, M, p, α), eachslice(z; dims=3))
+end
+stein_residual(z::AbstractArray, M, p, α) = _rank_error(z)

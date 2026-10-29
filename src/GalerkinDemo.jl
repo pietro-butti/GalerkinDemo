@@ -2,6 +2,7 @@ module GalerkinDemo
 
 using ADerrors: uwreal, uwerr, value, err, taui, window
 import Plots
+using Statistics: cov
 
 greet() = print("Hello World!")
 
