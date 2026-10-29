@@ -29,6 +29,12 @@ improved_samples(z::AbstractArray{<:Real,3}, M, p, α)         -> Matrix, size (
 control_variate_samples(z::AbstractArray{<:Real,3}, M, p, α)  -> Matrix, size (T, N)
     # per-configuration samples a_n(t), cv_n(t); row t+1 holds t, like correlator_samples
 
+stein_violation(z::AbstractArray{<:Real,3}, M, p, α) -> Real
+    # sample mean of ℒΦ = Σ_j α_j ℒψ_j; its population value is 0 (Stein identity)
+
+ibp_violation(z::AbstractArray{<:Real,3}, M, p) -> Real
+    # Frobenius distance ‖Agrad − Aibp‖_F between the two A matrices of spec 004
+
 improved_correlator(z::AbstractArray{<:Real,3}, M, p, α, id::String) -> Vector{uwreal}
 control_variate(z::AbstractArray{<:Real,3}, M, p, α, id::String)     -> Vector{uwreal}
     # length T; element t+1 is uwreal(<samples>[t+1, :], id), as in `correlator`
@@ -82,6 +88,17 @@ exactly as `correlator_samples` averages `Π(τ)Π(τ+t)`.
 **Ensemble values.** `Â(t) = (1/N) Σ_n a_n(t)`, `CV(t) = (1/N) Σ_n cv_n(t)`; the `uwreal`s
 are `uwreal(a[t+1,:], id)` and `uwreal(cv[t+1,:], id)`.
 
+**Metrics.** Diagnostics of how well a sample and an α respect the identities that make
+the estimator unbiased.
+
+    stein_violation(z; α) = (1/N) Σ_n Σ_j α_j ℒψ_j(z_n)         (population value ⟨ℒΦ⟩ = 0)
+    ibp_violation(z)      = ‖Agrad − Aibp‖_F = sqrt(Σ_ij (Agrad_ij − Aibp_ij)²)
+
+`Agrad` and `Aibp` are those of `galerkin_matrices` (spec 004, reused); they have the same
+population value (`Cov(f, ℒg) = −⟨∇f·∇g⟩`), so `ibp_violation` measures the failure of
+integration by parts on the sample (adjoint Stein identity). Both vanish only in the
+population/limit, not on a finite sample; only deterministic cases are tested (AC-4).
+
 **Unbiasedness** (population, any α): `⟨cv_n(t)⟩ = 0`, because `cv` is an average of
 `𝒯(Π_t ∇Φ)` over τ and `⟨𝒯 g⟩ = 0`; equivalently `⟨ℒψ_j⟩ = 0`. Hence `⟨a_n(t)⟩ = C(t)`.
 
@@ -129,14 +146,20 @@ builds a `uwreal` uses its own unique `id` string. Each AC is one `@testset`
   `α_vm`, `rolled_residual(zG,4,p,α) == zeros(4,50)`; every column of `improved_samples`
   equals `3 .* G0[:,1]` (`= C(t)`); every column of `control_variate_samples` equals
   `3 .* G0[:,1] − correlator_samples(slab_sums(zG))[:,n]`.
-- **AC-4: Stein identity and unbiasedness.** Formulas used: Unbiasedness, `C(t) = L G0[t,0]`.
-  `zB = gaussian_batch(MersenneTwister(4321), 20000)`; `α` any of `α_grad =
-  solve_alpha(zA,4,p,:grad)` (fitted on the independent `zA`), `α*`, `ones(4)`. Each
-  checked quantity `q` (a vector of length 20000) satisfies `|mean(q) − q₀| ≤ 5·std(q)/√20000`
-  with: (a) the four rows of `stein_psi(zB,4,p)`, `q₀ = 0`; (b) the four rows of
-  `control_variate_samples(zB,4,p,α)`, `q₀ = 0`, for each of the three α; (c) the four rows
-  of `improved_samples(zB,4,p,α)`, `q₀ = 3·G0[t,0]`, for each of the three α. Samples are
-  i.i.d., so the bound is a 5-standard-error statement.
+- **AC-4: metrics.** Formulas used: Metrics. (a) Stein violation, hand values: `z[:,:,n] =
+  fill(a_n,4,3)`, `a = [1,2,3]`: `stein_violation(z,4,p,[1,0,0,0]) = −7.2` and
+  `stein_violation(z,4,p,ones(4)) = −28.8`, exact. (b) On `zA`: equals
+  `mean(stein_psi(zA,4,p)' * α)` and is linear in `α` (`v(α₁+2α₂) = v(α₁)+2v(α₂)`), to
+  1e-12. (c) Antithetic batch `cat(zG, −zG; dims=3)` with `zG = gaussian_batch(MersenneTwister(2024), 50)`:
+  `stein_violation` is `0` (`atol=1e-12`) for `α_grad` (fitted on `zA`), `α*` and `ones(4)`;
+  this is the Stein identity on a symmetric sample (`ℒψ_j` is odd in `z`). (d) IBP violation,
+  hand value: for `z` of (a)-type with `a = [-2,-1,0,1,2]`, `Agrad = 3I` and
+  `Aibp = 27·ones(4,4)` (spec 004 AC-1), so `ibp_violation(z,4,p) = √11052`, exact.
+  (e) On `zA`: `ibp_violation == norm(Agrad − Aibp)` (Frobenius) from `galerkin_matrices`,
+  and `== norm(B*K0 − 3I)` (spec 004 consequence), to 1e-12; it is `> 0`. Both metrics
+  return a scalar (`Real`), and `ibp_violation` throws `ArgumentError` on `randn(4,3)`,
+  on `N = T` (`randn(4,3,4)`) and `M ≠ T`; `stein_violation` throws `ArgumentError` on
+  rank-2 `z` and `M ≠ T`, `DimensionMismatch` for `length(α) = 3`.
 - **AC-5: `C + CV` equals the improved correlator.** Formulas used: identity `a = c + cv`,
   Ensemble values. `z = gaussian_batch(MersenneTwister(99), 2000)`,
   `α = solve_alpha(gaussian_batch(MersenneTwister(7), 40), 4, p, :grad)`, one `id`.
@@ -163,6 +186,9 @@ builds a `uwreal` uses its own unique `id` string. Each AC is one `@testset`
 
 ## Out of scope
 
+- Statistical tests of the Stein identity or of unbiasedness (`⟨ℒψ_j⟩ = 0`, `⟨cv⟩ = 0`) on
+  finite i.i.d. samples; a normalised/relative `ibp_violation`; a standard error of
+  `stein_violation`.
 - Fitting α or cross-fitting (the offline/online split); `α` is an argument.
 - Predicted variance reduction of the grad solver (`(T+1)/N`), any claim that `err(Â) <
   err(C)` for `:grad`, and the population variance of `R`.

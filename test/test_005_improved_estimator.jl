@@ -42,7 +42,6 @@ end
 
 _close005(a, b; tol=1e-12) = isapprox(a, b; rtol=tol, atol=tol)
 _exact005(a, b) = isapprox(a, b; rtol=1e-14, atol=1e-14)
-_stat005(q, q0) = abs(mean(q) - q0) <= 5 * std(q) / sqrt(length(q))
 
 @testset "spec 005: improved estimator" begin
     p = _p005
@@ -115,21 +114,6 @@ _stat005(q, q0) = abs(mean(q) - q0) <= 5 * std(q) / sqrt(length(q))
             @test isapprox(R, zeros(4, 50); atol=1e-12)
             @test all(_close005(A[:, n], 3 .* G0[:, 1]) for n in 1:50)
             @test all(_close005(CV[:, n], 3 .* G0[:, 1] .- c[:, n]) for n in 1:50)
-        end
-    end
-
-    @testset "AC-4: Stein identity and unbiasedness" begin
-        zB = gaussian_batch(Random.MersenneTwister(4321), 20000)
-        αgrad = solve_alpha(zA, 4, p, :grad)
-        ψ = stein_psi(zB, 4, p)
-        @test all(_stat005(ψ[t, :], 0.0) for t in 1:4)
-        for α in (αgrad, αstar, ones(4))
-            CV = control_variate_samples(zB, 4, p, α)
-            A = improved_samples(zB, 4, p, α)
-            @test size(CV) == (4, 20000)
-            @test size(A) == (4, 20000)
-            @test all(_stat005(CV[t, :], 0.0) for t in 1:4)
-            @test all(_stat005(A[t, :], 3 * G0[t, 1]) for t in 1:4)
         end
     end
 

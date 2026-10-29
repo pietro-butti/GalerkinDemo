@@ -3,6 +3,8 @@
 
 export basis, basis_grad, basis_laplacian, stein_psi
 export galerkin_matrices, solve_alpha, stein_residual
+export shift_term, rolled_residual, improved_samples, control_variate_samples
+export improved_correlator, control_variate
 
 # Throws unless `z` is a (T, L) array with T, L >= 1 and `M == T`.
 function _check_basis_args(z::AbstractMatrix{<:Real}, M)
@@ -170,3 +172,110 @@ function stein_residual(z::AbstractArray{<:Real,3}, M, p, α)
     return map(s -> stein_residual(s, M, p, α), eachslice(z; dims=3))
 end
 stein_residual(z::AbstractArray, M, p, α) = _rank_error(z)
+
+# ---- Improved estimator and control variate (spec 005-improved-estimator) ----
+
+# Throws unless `z` is a (T, L, N) batch with T, L, N >= 1, M == T and length(α) == M.
+function _check_estimator_args(z::AbstractArray, M, α)
+    ndims(z) == 3 || _batch_rank_error(z)
+    _check_basis_args(z, M)
+    length(α) == M ||
+        throw(DimensionMismatch("α has length $(length(α)), expected M = $M"))
+    return nothing
+end
+
+"""
+    shift_term(z, M, α) -> Vector, size (T,)
+
+Shift term of the improved estimator for a `(T, L)` configuration,
+
+    f_t = Σ_j α_j Σ_x ∂ψ_j/∂z(t,x)   (= L α_t for the level-1 basis).
+"""
+function shift_term(z::AbstractMatrix{<:Real}, M, α)
+    _check_basis_args(z, M)
+    length(α) == M ||
+        throw(DimensionMismatch("α has length $(length(α)), expected M = $M"))
+    G = basis_grad(z, M)
+    return [sum(G[t, :, :] * α) for t in axes(G, 1)]
+end
+shift_term(z::AbstractArray, M, α) = _rank_error(z)
+
+"""
+    rolled_residual(z, M, p, α) -> Matrix, size (T, N)
+
+Residual of the source at time τ, element `[τ+1, n]`:
+
+    R(z_n^τ; α),   z_n^τ(t,x) = z_n((t+τ) mod T, x)
+
+with `R` the [`stein_residual`](@ref) of the single source `Π(0)`.
+"""
+function rolled_residual(z::AbstractArray{<:Real,3}, M, p, α)
+    _check_estimator_args(z, M, α)
+    T = size(z, 1)
+    return stack(map(s -> [stein_residual(circshift(s, (-τ, 0)), M, p, α) for τ in 0:T-1],
+                     eachslice(z; dims=3)))
+end
+rolled_residual(z::AbstractArray, M, p, α) = _batch_rank_error(z)
+
+# a_n(t) = f_t + (1/T) Σ_τ (R_τ,n − δ·Π_n(τ)) Π_n(τ+t); δ = 0 gives the improved
+# estimator, δ = 1 the control variate.
+function _estimator_samples(z, M, p, α, δ)
+    _check_estimator_args(z, M, α)
+    T, _, N = size(z)
+    R = rolled_residual(z, M, p, α)
+    Π = basis(z, M)
+    f = shift_term(view(z, :, :, 1), M, α)
+    return [f[t+1] + sum(τ -> (R[τ+1, n] - δ * Π[τ+1, n]) * Π[mod(τ + t, T)+1, n], 0:T-1) / T
+            for t in 0:T-1, n in 1:N]
+end
+
+"""
+    improved_samples(z, M, p, α) -> Matrix, size (T, N)
+
+Per-configuration improved estimator, row `t+1` holding `t`:
+
+    a_n(t) = f_t + (1/T) Σ_τ R_τ,n Π_n(τ+t)
+
+(see [`shift_term`](@ref), [`rolled_residual`](@ref)); `a_n(t) = c_n(t) + cv_n(t)`.
+"""
+improved_samples(z::AbstractArray{<:Real,3}, M, p, α) = _estimator_samples(z, M, p, α, 0)
+improved_samples(z::AbstractArray, M, p, α) = _batch_rank_error(z)
+
+"""
+    control_variate_samples(z, M, p, α) -> Matrix, size (T, N)
+
+Per-configuration control variate, to be added to the standard estimator:
+
+    cv_n(t) = f_t + (1/T) Σ_τ (R_τ,n − Π_n(τ)) Π_n(τ+t),   ⟨cv_n(t)⟩ = 0.
+"""
+control_variate_samples(z::AbstractArray{<:Real,3}, M, p, α) = _estimator_samples(z, M, p, α, 1)
+control_variate_samples(z::AbstractArray, M, p, α) = _batch_rank_error(z)
+
+function _as_uwreal(samples, id)
+    c = Float64.(samples)
+    return [uwreal(c[t, :], id) for t in 1:size(c, 1)]
+end
+
+"""
+    improved_correlator(z, M, p, α, id) -> Vector{uwreal}
+
+Element `t+1` is `uwreal(improved_samples(z, M, p, α)[t+1, :], id)`. Needs `N ≥ 3` and
+finite `z`, as [`correlator`](@ref).
+"""
+function improved_correlator(z::AbstractArray{<:Real,3}, M, p, α, id::String)
+    _check_config_array(z)
+    return _as_uwreal(improved_samples(z, M, p, α), id)
+end
+improved_correlator(z::AbstractArray, M, p, α, id::String) = _batch_rank_error(z)
+
+"""
+    control_variate(z, M, p, α, id) -> Vector{uwreal}
+
+Element `t+1` is `uwreal(control_variate_samples(z, M, p, α)[t+1, :], id)`. With the same
+`id` as `correlator(z, id)`, `C[t] + CV[t]` is the improved correlator.
+"""
+function control_variate(z::AbstractArray{<:Real,3}, M, p, α, id::String)
+    _check_config_array(z)
+    return _as_uwreal(control_variate_samples(z, M, p, α), id)
+end
+control_variate(z::AbstractArray, M, p, α, id::String) = _batch_rank_error(z)
