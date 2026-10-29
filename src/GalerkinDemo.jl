@@ -6,6 +6,7 @@ import Plots
 greet() = print("Hello World!")
 
 export slab_sums, correlator_samples, correlator, correlator_stats, plottable, plot_correlator
+export nn, action_slice, grad_slice, action, grad_S
 
 # Throws unless `z` is a (T, L, N) array with T, L >= 1, N >= 3 and finite entries.
 function _check_config_array(z::AbstractArray{<:Real,3})
@@ -130,5 +131,62 @@ function plot_correlator(stats::NamedTuple)
                          yerror = stats.err[keep], yscale = :log10,
                          xlabel = "t", ylabel = "C(t)", legend = false)
 end
+
+"""
+    nn(ϕ, s)
+
+Sum of `ϕ` circularly shifted by `s` along each dimension (2d and 4d arrays):
+
+    nn(ϕ, s)(x) = Σ_μ ϕ(x + s e_μ)
+"""
+nn(ϕ::AbstractArray{T,2}, s) where T =
+    circshift(ϕ,(s,0)) .+
+    circshift(ϕ,(0,s))
+nn(ϕ::AbstractArray{T,4}, s) where T =
+    circshift(ϕ,(s,0,0,0)) .+
+    circshift(ϕ,(0,s,0,0)) .+
+    circshift(ϕ,(0,0,s,0)) .+
+    circshift(ϕ,(0,0,0,s))
+
+"""
+    action_slice(λ, κ) -> (ϕ -> S)
+
+Action of one `(T, L)` configuration on a periodic lattice:
+
+    S(ϕ) = Σ_{s,x} [ ϕ² + λ (ϕ² - 1)² - 2κ ϕ(s,x) (ϕ(s-1,x) + ϕ(s,x-1)) ]
+"""
+action_slice(λ,κ) = ϕ ->
+    ϕ.^2 .+ λ .* (ϕ.^2 .- 1).^2 .+ -2κ .* ϕ .* nn(ϕ,-1) |> sum
+
+"""
+    grad_slice(λ, κ) -> (ϕ -> ∂S/∂ϕ)
+
+Gradient of [`action_slice`](@ref), same size as `ϕ`:
+
+    ∂S/∂ϕ(s,x) = 2ϕ + 4λ (ϕ² - 1) ϕ
+                  - 2κ (ϕ(s-1,x) + ϕ(s,x-1) + ϕ(s+1,x) + ϕ(s,x+1))
+"""
+grad_slice(λ,κ) = ϕ ->
+    2ϕ .+ 4λ .* (ϕ.^2 .- 1) .* ϕ .+ -2κ .* (nn(ϕ,-1) .+ nn(ϕ,1))
+
+"""
+    action(λ, κ) -> (ϕ::AbstractArray{<:Real,3} -> Vector)
+
+Action of every configuration of a `(T, L, N)` batch; element `n` of the result is
+
+    S(ϕ[:,:,n]) = action_slice(λ, κ)(ϕ[:,:,n])
+"""
+action(λ,κ) = ϕ::AbstractArray{<:Real,3} ->
+    map(action_slice(λ,κ), eachslice(ϕ; dims=3))
+
+"""
+    grad_S(λ, κ) -> (ϕ::AbstractArray{<:Real,3} -> Array{·,3})
+
+Gradient of [`action`](@ref) for a `(T, L, N)` batch, same size as `ϕ`; slice `n` is
+
+    ∂S/∂ϕ evaluated on ϕ[:,:,n] = grad_slice(λ, κ)(ϕ[:,:,n])
+"""
+grad_S(λ,κ) = ϕ::AbstractArray{<:Real,3} ->
+    stack(map(grad_slice(λ,κ), eachslice(ϕ; dims=3)))
 
 end # module GalerkinDemo
