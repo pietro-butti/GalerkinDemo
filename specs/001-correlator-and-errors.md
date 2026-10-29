@@ -23,19 +23,25 @@ correlator_stats(C::Vector{uwreal}, id::String) -> NamedTuple
     # returns (t, value, err, taui, window):
     #   t::UnitRange{Int} = 0:T-1, the others Vector{Float64} / Vector{Int} of length T
 
+plottable(uwcorr::Vector{uwreal}; tol=1e-10) -> NamedTuple
+    # calls uwerr on every element of uwcorr (mutates it); returns (t, value, err)
+    # restricted to the points whose lower error bar value - err exceeds tol
+    #   t::Vector{Int} (t = index-1), value, err::Vector{Float64}
+
 plot_correlator(stats::NamedTuple) -> Plots.Plot
-    # C(t) vs t with error bars, log y-axis; returned, never saved
+    # C(t) vs t with error bars, log y-axis; returned, never saved. NOT tested (see AC-11)
 ```
 
 Assumptions: one replica, one contiguous MC history (no gaps), `uwerr(a)` with no
 extra argument, `id` is required, no deprecated `Int64` ids.
 
 Input validation (throws, never returns NaN silently):
-- `z` with `T < 1`, `L < 1` or `N < 2` → `ArgumentError`
+- `z` with `T < 1`, `L < 1` or `N < 3` → `ArgumentError` (`N ≥ 3`, see Notes)
 - non-finite entries in `z` → `ArgumentError`
 - `C` empty in `correlator_stats` → `ArgumentError`
+- `uwcorr` empty in `plottable` → `ArgumentError`
 - `stats` in `plot_correlator` lacking any of `t, value, err` or with unequal lengths
-  → `ArgumentError` / `DimensionMismatch`
+  → `ArgumentError` / `DimensionMismatch` (implemented, not tested)
 
 ## Formulas
 
@@ -65,9 +71,19 @@ throws for some `t` (e.g. `ArgumentError` when no window can be determined),
 The `C(t)` for different `t` share one `id`, hence one MC history: their covariance is
 that of the ADerrors error propagation. No covariance matrix is exposed by this spec.
 
+**Plottable points** (`plottable`): after `uwerr` on every `C(t)`, keep the `t` for which
+the lowest end of the error bar is above the tolerance:
+
+    value(C(t)) - err(C(t)) > tol        (default tol = 1e-10)
+
+Points failing this cannot be drawn with a full error bar on a log axis and are dropped
+(not clamped). Order of `t` is preserved. If no point survives, the result has empty
+vectors.
+
 **Plot** (`plot_correlator`): points `(t, value[t])`, vertical error bars `± err[t]`,
-y-axis logarithmic. Points with `value ≤ 0` cannot be drawn on a log axis and are omitted
-(not clamped). Axis labels: `t`, `C(t)`.
+y-axis logarithmic. Points with `value ≤ 0` are omitted (not clamped); callers are expected
+to pass the output of `plottable`. Axis labels: `t`, `C(t)`. Plotting is not covered by
+acceptance tests.
 
 ## Acceptance criteria
 
@@ -75,17 +91,22 @@ Tolerance convention: "exact" means `isapprox(a, b; rtol=1e-14, atol=1e-14)` (al
 are small integer-valued or hand-computable). Every test that builds a `uwreal` uses its
 own unique `id` string, because ADerrors keeps ids in a global registry.
 
-- **AC-1: slab sums.** `z` of size `(2,3,2)` with `z[:,:,1] = [1 2 3; 4 5 6]` and
-  `z[:,:,2] = [-1 0 1; 2 2 2]`. `slab_sums(z) == [6 0; 15 6]` (size `(2,2)`), exact.
+- **AC-1: slab sums.** `z` of size `(2,3,3)` with `z[:,:,1] = [1 2 3; 4 5 6]`,
+  `z[:,:,2] = [-1 0 1; 2 2 2]` and `z[:,:,3] = [0 0 0; 1 1 1]`.
+  `slab_sums(z) == [6 0 0; 15 6 3]` (size `(2,3)`), exact.
 - **AC-2: rolled correlator by hand.** `Π = [1 1; 2 0; 3 0; 4 0]` (T=4, N=2).
   `correlator_samples(Π)` is `[7.5 0.25; 6 0; 5.5 0; 6 0]`, exact. Also `T=1`, `Π=[3.0;;]`
   gives `[9.0;;]`.
 - **AC-3: periodic symmetry.** `z = randn(MersenneTwister(1234), 8, 3, 10)`.
   For `t = 1..7`, row `t+1` of `correlator_samples(slab_sums(z))` equals row `8-t+1`,
   `rtol=1e-12`.
-- **AC-4: ensemble mean.** `z` of size `(4,1,2)` with `z[:,1,:] = Π` from AC-2.
-  `value.(correlator(z, id))` is `[3.875, 3.0, 2.75, 3.0]`, exact; length is `T = 4`.
-- **AC-5: shared id correlates the t's.** With `z` from AC-3 and one `id`, after `uwerr`
+- **AC-4: ensemble mean.** `N = 4` (not 2: ADerrors reads a 2-element data vector as
+  `[value, error]`, see Notes). `z` of size `(4,1,4)` with `z[:,1,:] = Π`,
+  `Π = [1 1 1 1; 2 0 0 0; 3 0 0 0; 4 0 0 0]`. `value.(correlator(z, id))` is
+  `[2.0625, 1.5, 1.375, 1.5]`, exact; length is `T = 4`.
+- **AC-5: shared id correlates the t's.** With `z = randn(MersenneTwister(1234), 8, 3, 20)`
+  (N = 20: with N = 10 the default `uwerr` window exceeds the available lags and throws)
+  and one `id`, after `uwerr`
   on `D = C[2] - C[8]` (t=1 and t=7, equal sample by sample): `value(D)` and `err(D)` are
   `0` with `atol=1e-12`. (With independent ids `err(D)` would be nonzero.)
 - **AC-6: constant data.** `z = ones(8,4,50)`. After `correlator_stats`: `value == 16` for
@@ -96,16 +117,22 @@ own unique `id` string, because ADerrors keeps ids in a global registry.
 - **AC-8: iid error scale.** Same data as AC-7. For each t, `stats.err[t+1]` agrees with
   `std(c_n(t)) / √N` to `rtol=0.2`. (Expected for independent samples, where τ_int ≈ 1/2.)
 - **AC-9: no mutation, no I/O.** `z` and `Π` are unchanged (`==` to a copy taken before)
-  after `slab_sums`, `correlator_samples`, `correlator`. `plot_correlator` creates no file
-  in the working directory.
+  after `slab_sums`, `correlator_samples`, `correlator`. (`plot_correlator` no-file check
+  dropped, plotting is untested.)
 - **AC-10: invalid input.** Each throws the stated type:
-  `z` with `T=0` or `L=0` or `N=1` → `ArgumentError`; `z` containing `NaN` or `Inf` →
+  `z` with `T=0` or `L=0` or `N=1` or `N=2` → `ArgumentError`; `z` containing `NaN` or `Inf` →
   `ArgumentError`; `correlator_stats(uwreal[], id)` → `ArgumentError`;
-  `plot_correlator` with `err` missing → `ArgumentError`;
-  `value` and `err` of different length → `DimensionMismatch`.
-- **AC-11: plot.** `plot_correlator` returns a `Plots.Plot` with log y-scale.
-  For `stats = (t=0:2, value=[1.0,-1.0,2.0], err=[0.1,0.1,0.1])` exactly two points
-  are plotted (t=0 and t=2).
+  `plottable(uwreal[])` → `ArgumentError`. (`plot_correlator` validation dropped from the
+  tests.)
+- **AC-11: plottable.** Using `z = randn(MersenneTwister(1234), 8, 3, 2000)` and one `id`,
+  let `s = plottable(C; tol)`:
+  (a) with `tol = -Inf`, all `t = 0:7` are kept and `s.value`, `s.err` equal
+  `value.(C)`, `err.(C)` exactly;
+  (b) with `tol = Inf`, `s.t`, `s.value`, `s.err` are empty;
+  (c) for the default `tol`, every kept point satisfies `s.value - s.err > 1e-10` and
+  every dropped point satisfies `value - err ≤ 1e-10`.
+  Hand-checkable case: `z = ones(8,4,50)` gives `value = 16`, `err = 0`, so all 8 points
+  are kept for the default `tol`.
 
 ## Out of scope
 
@@ -118,6 +145,28 @@ own unique `id` string, because ADerrors keeps ids in a global registry.
 - Covariance matrix between different `t`, and any derived quantity of the `C(t)`.
 - Legacy `Int64` ensemble ids.
 - Catching or working around ADerrors windowing failures.
+
+## Notes
+
+- ADerrors `uwreal(data::Vector{Float64}, id::String)` interprets a 2-element vector as
+  `[value, error]`, not as two samples. `correlator` with `N = 2` would therefore return the
+  first sample as the value. Decision: input validation requires `N ≥ 3` (supersedes the
+  earlier `N ≥ 2`), so this case cannot occur through `z`. AC-4 uses `N = 4`.
+  `correlator_samples` takes `Π` directly and does no `N` check (AC-2 uses `N = 2`).
+- ADerrors' default `uwerr` fails on very short histories (N = 10 here), see AC-5.
+- Decision: `plottable` reads "lowest error bar above `tol`" as `value - err > tol`, calls
+  `uwerr` itself, and returns `(t, value, err)`.
+
+## Progress
+
+- [x] `slab_sums`, `correlator_samples`, `correlator`, `correlator_stats`, `plottable`,
+  `plot_correlator`, validation: implemented in `src/GalerkinDemo.jl` (uncommitted).
+- [x] Validation requires `N ≥ 3` in `src/GalerkinDemo.jl`.
+- [x] Tests in `test/` regenerated for this spec (AC-1 with `N = 3`, AC-4 with `N = 4`,
+  AC-5 with `N = 20`, AC-11 for `plottable`).
+- [x] Last run: `Pkg.test()` 62 passed, 0 failed, 0 errored.
+- [x] AC-10 test covers `N = 1` and `N = 2`.
+- [ ] Review and commit.
 
 ## Open questions
 
